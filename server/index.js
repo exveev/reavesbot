@@ -1,0 +1,192 @@
+const express = require("express");
+const axios = require("axios");
+const cors = require("cors");
+const path = require("path");
+
+const app = express();
+app.use(cors());
+app.use(express.json());
+
+const BASE = "https://api.real.vg";
+
+// ── Active snipe jobs (in-memory) ────────────
+const jobs = {};
+
+// ── Parse raw HTTP request ────────────────────
+function parseCreds(raw) {
+  const result = {};
+  const want = {
+    "real-auth-info":            "authInfo",
+    "real-device-uuid":          "deviceUuid",
+    "real-request-token":        "requestToken",
+    "real-native-request-token": "nativeToken",
+    "real-device-name":          "deviceName",
+    "real-device-type":          "deviceType",
+    "real-version":              "version",
+    "user-agent":                "userAgent",
+    "baggage":                   "baggage",
+    "sentry-trace":              "sentryTrace",
+  };
+  for (const line of raw.split(/\r?\n/)) {
+    const colon = line.indexOf(":");
+    if (colon < 1) continue;
+    const k = line.slice(0, colon).trim().toLowerCase();
+    const v = line.slice(colon + 1).trim();
+    if (want[k]) result[want[k]] = v;
+  }
+  return result;
+}
+
+// ── Build headers ─────────────────────────────
+function makeHeaders(creds, bodyStr = null) {
+  const ts = Date.now();
+  const parts = (creds.nativeToken || "").split(".");
+  const nativeTok = parts.length >= 2 ? `${ts}.${parts.slice(1).join(".")}` : `${ts}.placeholder`;
+  const headers = {
+    "Accept":                    "application/json",
+    "Content-Type":              "application/json",
+    "real-auth-info":            creds.authInfo,
+    "real-device-uuid":          creds.deviceUuid,
+    "real-request-token":        creds.requestToken,
+    "real-device-name":          creds.deviceName || "iPhone14,7",
+    "real-device-type":          creds.deviceType || "ios",
+    "real-version":              creds.version || "34",
+    "real-native-request-token": nativeTok,
+    "User-Agent":                creds.userAgent || "real/1 CFNetwork/3826.600.41.2.1 Darwin/24.6.0",
+    "Accept-Language":           "en-US,en;q=0.9",
+    "Accept-Encoding":           "gzip, deflate, br",
+    "Connection":                "keep-alive",
+    "baggage":                   creds.baggage || "sentry-environment=production,sentry-public_key=00e61a8109694360a8db52afe3f9a4fa,sentry-release=vg.real-10.163",
+    "sentry-trace":              creds.sentryTrace || "0000000000000000000000000000000000000000-0000000000000000-0",
+  };
+  if (bodyStr) headers["Content-Length"] = String(bodyStr.length);
+  return headers;
+}
+
+const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+
+// ── Check if username is available ───────────
+async function checkUsername(username, creds) {
+  try {
+    const res = await axios.get(`${BASE}/user/${encodeURIComponent(username)}?_=${Date.now()}`, {
+      headers: makeHeaders(creds),
+      validateStatus: () => true,
+    });
+    // 404 or empty = available
+    if (res.status === 404) return { available: true };
+    if (res.status === 200 && res.data) return { available: false, user: res.data };
+    return { available: false };
+  } catch (e) {
+    return { available: false, error: e.message };
+  }
+}
+
+// ── Claim username ────────────────────────────
+async function claimUsername(username, creds) {
+  const body = JSON.stringify({ userName: username });
+  try {
+    const res = await axios.post(`${BASE}/user/changeusername`, body, {
+      headers: makeHeaders(creds, body),
+      validateStatus: () => true,
+    });
+    return { ok: res.status === 200 || res.status === 201, status: res.status, data: res.data };
+  } catch (e) {
+    return { ok: false, error: e.message };
+  }
+}
+
+// ── Routes ────────────────────────────────────
+
+// Parse creds from raw request
+app.post("/api/parse-creds", (req, res) => {
+  const { raw } = req.body;
+  if (!raw) return res.status(400).json({ error: "No raw request provided" });
+  const creds = parseCreds(raw);
+  if (!creds.authInfo) return res.status(400).json({ error: "Could not find real-auth-info header" });
+  res.json(creds);
+});
+
+// Check a username once
+app.post("/api/check", async (req, res) => {
+  const { username, creds } = req.body;
+  if (!username || !creds) return res.status(400).json({ error: "Missing username or creds" });
+  const result = await checkUsername(username, creds);
+  res.json(result);
+});
+
+// Start a snipe job (SSE stream)
+app.post("/api/snipe", async (req, res) => {
+  const { username, creds, interval = 5000 } = req.body;
+  if (!username || !creds) return res.status(400).json({ error: "Missing username or creds" });
+
+  res.setHeader("Content-Type", "text/event-stream");
+  res.setHeader("Cache-Control", "no-cache");
+  res.setHeader("Connection", "keep-alive");
+
+  const send = (type, data) => {
+    try { res.write(`data: ${JSON.stringify({ type, ...data })}\n\n`); } catch (_) {}
+  };
+
+  const jobId = Date.now().toString();
+  jobs[jobId] = { running: true };
+
+  send("started", { jobId, username, message: `👀 Watching for @${username}...` });
+
+  let checks = 0;
+
+  while (jobs[jobId]?.running) {
+    checks++;
+    send("checking", { message: `🔍 Check #${checks} — is @${username} available?` });
+
+    const result = await checkUsername(username, creds);
+
+    if (result.error) {
+      send("log", { message: `⚠️ Check error: ${result.error}` });
+    } else if (result.available) {
+      send("available", { message: `✅ @${username} is AVAILABLE! Claiming now...` });
+
+      // Try to claim it
+      const claim = await claimUsername(username, creds);
+      if (claim.ok) {
+        send("claimed", { message: `🎉 Successfully claimed @${username}!` });
+        send("done", { success: true, message: `@${username} is now yours!` });
+      } else {
+        send("claim_failed", { message: `❌ Claim failed: ${JSON.stringify(claim.data || claim.error)}` });
+        send("done", { success: false, message: "Available but claim failed — try manually" });
+      }
+      break;
+    } else {
+      send("log", { message: `❌ @${username} is taken — waiting ${interval / 1000}s...` });
+    }
+
+    // Wait before next check
+    await sleep(interval);
+  }
+
+  if (!jobs[jobId]?.running) {
+    send("stopped", { message: "🛑 Snipe job stopped." });
+  }
+
+  delete jobs[jobId];
+  res.end();
+});
+
+// Stop a snipe job
+app.post("/api/stop", (req, res) => {
+  const { jobId } = req.body;
+  if (jobs[jobId]) {
+    jobs[jobId].running = false;
+    res.json({ ok: true });
+  } else {
+    res.json({ ok: false, error: "Job not found" });
+  }
+});
+
+// Serve React build in production
+app.use(express.static(path.join(__dirname, "../client/build")));
+app.get("*", (req, res) => {
+  res.sendFile(path.join(__dirname, "../client/build/index.html"));
+});
+
+const PORT = process.env.PORT || 3001;
+app.listen(PORT, () => console.log(`✦ ReavesBot running on port ${PORT}`));
