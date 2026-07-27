@@ -84,9 +84,16 @@ async function checkUsername(username, creds) {
       return { available: true };
     }
 
-    if (res.status === 200) {
-      return { available: false, user: res.data };
-    }
+ if (res.status === 200) {
+  if (res.data?.user === null) {
+    return { available: true };
+  }
+
+  return {
+    available: false,
+    user: res.data.user,
+  };
+}
 
     return {
       available: false,
