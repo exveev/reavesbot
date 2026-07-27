@@ -68,15 +68,34 @@ const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 // ── Check if username is available ───────────
 async function checkUsername(username, creds) {
   try {
-    const res = await axios.get(`${BASE}/user/${encodeURIComponent(username)}?_=${Date.now()}`, {
-      headers: makeHeaders(creds),
-      validateStatus: () => true,
-    });
-    // 404 or empty = available
-    if (res.status === 404) return { available: true };
-    if (res.status === 200 && res.data) return { available: false, user: res.data };
-    return { available: false };
+    const res = await axios.get(
+      `${BASE}/user/${encodeURIComponent(username)}?_=${Date.now()}`,
+      {
+        headers: makeHeaders(creds),
+        validateStatus: () => true,
+      }
+    );
+
+    console.log("Username:", username);
+    console.log("Status:", res.status);
+    console.log("Response:", res.data);
+
+    if (res.status === 404) {
+      return { available: true };
+    }
+
+    if (res.status === 200) {
+      return { available: false, user: res.data };
+    }
+
+    return {
+      available: false,
+      error: `Unexpected status ${res.status}`,
+      status: res.status,
+      data: res.data,
+    };
   } catch (e) {
+    console.error(e);
     return { available: false, error: e.message };
   }
 }
