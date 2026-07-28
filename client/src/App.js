@@ -96,7 +96,7 @@ function LogEntry({ msg, type }) {
 
 // ── MAIN APP ──────────────────────────────────
 export default function App() {
-  const [creds, setCreds] = useState(null);
+  const [creds, setCreds] = useState(() => {   const saved = localStorage.getItem("realCreds");   return saved ? JSON.parse(saved) : null; });
   const [showConnect, setShowConnect] = useState(false);
   const [username, setUsername] = useState("");
   const [interval, setInterval_] = useState("5");
@@ -189,7 +189,7 @@ export default function App() {
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
             <div style={{ width: 8, height: 8, borderRadius: "50%", background: C.green, boxShadow: `0 0 8px ${C.green}` }} />
             <span style={{ fontFamily: ff.b, fontSize: 13, color: "#aaa" }}>{creds.deviceName || "Connected"}</span>
-            <button onClick={() => setCreds(null)} style={{ background: "none", border: "none", color: C.muted, cursor: "pointer", fontSize: 18, lineHeight: 1 }}>✕</button>
+            <button   onClick={() => {     localStorage.removeItem("realCreds");     setCreds(null);   }} style={{ background: "none", border: "none", color: C.muted, cursor: "pointer", fontSize: 18, lineHeight: 1 }}>✕</button>
           </div>
         ) : (
           <button onClick={() => setShowConnect(true)} style={{ padding: "9px 18px", borderRadius: 8, border: "none", background: C.accent, color: "#fff", cursor: "pointer", fontFamily: ff.h, fontWeight: 800, fontSize: 14 }}>Connect Account</button>
@@ -318,7 +318,7 @@ export default function App() {
         )}
       </div>
 
-      {showConnect && <ConnectModal onConnect={c => { setCreds(c); setShowConnect(false); }} onClose={() => setShowConnect(false)} />}
+      {showConnect && (   <ConnectModal     onConnect={c => {       localStorage.setItem("realCreds", JSON.stringify(c));       setCreds(c);       setShowConnect(false);     }}     onClose={() => setShowConnect(false)}   /> )}
     </div>
   );
 }
